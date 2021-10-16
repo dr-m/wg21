@@ -75,6 +75,10 @@ some thread.
 class atomic_mutex
 {
 public:
+  constexpr atomic_mutex();
+  atomic_mutex(const atomic_mutex&) = delete;
+  atomic_mutex& operator=(const atomic_mutex&) = delete;
+
   bool trylock() noexcept;
   void lock() noexcept;
   void unlock() noexcept;
@@ -111,6 +115,10 @@ file system.
 class atomic_shared_mutex
 {
 public:
+  constexpr atomic_shared_mutex();
+  atomic_shared_mutex(const atomic_shared_mutex&) = delete;
+  atomic_shared_mutex& operator=(const atomic_shared_mutex&) = delete;
+
   bool try_lock() noexcept;
   void lock() noexcept;
   void unlock() noexcept;
