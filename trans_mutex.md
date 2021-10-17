@@ -314,6 +314,14 @@ resembles `std::lock_guard` but supports lock elision by using
 transactional memory when support is enabled during compilation time
 and detected during runtime.
 
+The `transactional_lock_guard` has been tested on GNU/Linux on POWER 8
+(with runtime detection of the POWER v2.09 Hardware Trace Monitor) and
+on IA-32 and AMD64 (with runtime detection of Intel TSX-NI a.k.a. RTM).
+
+The `transactional_lock_guard` implementation has also been tested on
+Microsoft Windows, but only on a processor that does not support
+TSX-NI or RTM.
+
 # Future Work
 
 Because `condition_variable` only works with `mutex` and not necessarily
