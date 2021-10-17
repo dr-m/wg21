@@ -30,12 +30,12 @@ The proposed `trans_mutex` and `shared_trans_mutex` address the
 following shortcomings of `mutex` and `shared_mutex`:
 
 For historical reasons, `mutex` and `shared_mutex` may be larger than
-necessary. For example, `sizeof(pthread_mutex_t)==48` on 64-bit
-GNU/Linux. For a prototype implementation, we have
-`sizeof(trans_mutex)==4` and `sizeof(shared_trans_mutex)==8`.
+necessary. For example, the size of `pthread_mutex_t` is 48 bytes on
+64-bit GNU/Linux. For a prototype implementation, we have a 4-byte
+`trans_mutex` and 8-byte `shared_trans_mutex`.
 
 On Microsoft Windows, this could be implemented as a trivial wrapper
-of `SRWLOCK`, with `sizeof(SRWLOCK)==sizeof(size_t)` (4 or 8 bytes).
+of `SRWLOCK`, whose size is 4 or 8 bytes.
 
 A small mutex could be embedded deep in concurrent data structures. An
 extreme could be to have one mutex per CPU cache line, covering a
@@ -60,9 +60,10 @@ But, lock elision can only work if the critical section is small and
 free from any system calls. Failed lock elision attempts hurt
 performance.
 
-Implementing lock elision in a memory transaction requires predicates
-like `is_locked()` or `is_locked_or_waiting()`, which are not defined
-for `mutex` or `shared_mutex`.
+Implementing lock elision in a memory transaction requires some
+predicates.  For `mutex` or `shared_mutex` or typical operating system
+mutexes, no predicates like `is_locked()` or `is_locked_or_waiting()`
+are defined, possibly because using them is considered bad style.
 
 ## shared_trans_mutex
 
@@ -72,11 +73,11 @@ itself and `lock()` but allows concurrent `shared_lock()`. The
 `update_lock()` could allow more concurrency in case some parts of the
 covered data structure are never read under `shared_lock()`.
 
-To allow more straightforward implementation on platforms that might
-not efficiently support `std::atomic::wait()` but could more easily
+To allow straightforward implementation on platforms that might not
+efficiently support `std::atomic::wait()` but could more easily
 implement `is_locked()` and `is_locked_or_waiting()` for an existing
-implementation of `mutex` or `shared_mutex`, we will omit
-`update_lock()` and related member functions from this proposal.
+implementation of `mutex` or `shared_mutex`, this proposal excludes
+`update_lock()` and related member functions.
 
 ## Use with `lock_guard`
 
@@ -118,7 +119,7 @@ This proposal is a pure library extension.
 
 # Proposed Wording
 
-Add after __§32.5.3 [shared.mutex.syn]__ the subsections
+Add after __§32.5.3 [shared.mutex.syn]__ the subsection
 [mutex.trans.syn] "Header `<trans_mutex>` synopsis":
 
 ```cpp
@@ -140,12 +141,15 @@ namespace std {
 
 Change the end of the first sentence of
 __§32.5.4.1.1 [thread.mutex.requirements.mutex.general]__
->… `shared_mutex`, and `shared_timed_mutex`.
-to
->… `shared_mutex`, `shared_timed_mutex`, `trans_mutex`, `shared_trans_mutex`.
 
-Add after __§32.5.4.2.3 [thread.mutex.recursive] the section
-[thread.mutex.trans]` "Class `trans_mutex`":
+>and `shared_timed_mutex`.
+
+to
+
+>`shared_timed_mutex`, `trans_mutex`, and `shared_trans_mutex`.
+
+Add after __§32.5.4.2.3 [thread.mutex.recursive]__ the section
+[thread.mutex.trans] "Class `trans_mutex`":
 ```cpp
 namespace std {
   class trans_mutex {
@@ -202,7 +206,7 @@ namespace std {
 >`trans_mutex` object owned by any thread.
 
 Add after __[thread.mutex.trans]__ the section
-[thread.sharedmutex.trans]` "Class `shared_trans_mutex`":
+[thread.sharedmutex.trans] "Class `shared_trans_mutex`":
 ```cpp
 namespace std {
   class shared_trans_mutex {
@@ -234,6 +238,7 @@ namespace std {
 >standard-layout class ([class.prop]).
 
 >The behavior of a program is undefined if:
+
 >1. it destroys an `shared_trans_mutex` object owned by any thread,
 >2. a thread attempts to recursively gain any ownership of an
 >`shared_trans_mutex`, or
