@@ -60,11 +60,6 @@ But, lock elision can only work if the critical section is small and
 free from any system calls. Failed lock elision attempts hurt
 performance.
 
-Implementing lock elision in a memory transaction requires some
-predicates.  For `mutex` or `shared_mutex` or typical operating system
-mutexes, no predicates like `is_locked()` or `is_locked_or_waiting()`
-are defined, possibly because using them is considered bad style.
-
 ## shared_trans_mutex
 
 A prototype implementation `atomic_shared_mutex` in [@atomic_sync]
@@ -112,6 +107,22 @@ public:
   void shared_lock() { spin_lock_shared(); }
 };
 ```
+
+## Compatibility with memory transactions
+
+While memory transactions are out of the scope of this proposal, we
+feel that they are important enough to be accounted for.
+
+Implementing lock elision in a memory transaction requires some
+predicates. For `mutex` or `shared_mutex` or typical operating system
+mutexes, no predicates like `is_locked()` or `is_locked_or_waiting()`
+are defined, possibly because using them outside assertions may be
+considered bad style.
+
+The prototype in [@atomic_sync] includes a `transactional_lock_guard`
+that resembles `std::lock_guard` but supports lock elision by using
+a memory transaction when support is enabled during compilation time
+and detected during runtime.
 
 # Impact on the Standard
 
@@ -314,11 +325,6 @@ futex-like operations on Linux, OpenBSD, and Microsoft Windows).
 That code base also includes a thin wrapper of Microsoft `SRWLOCK`
 for those cases where `update_lock()` is not needed.
 
-The prototype also includes a `transactional_lock_guard` that
-resembles `std::lock_guard` but supports lock elision by using
-transactional memory when support is enabled during compilation time
-and detected during runtime.
-
 The `transactional_lock_guard` has been tested on GNU/Linux on POWER 8
 (with runtime detection of the POWER v2.09 Hardware Trace Monitor) and
 on IA-32 and AMD64 (with runtime detection of Intel TSX-NI a.k.a. RTM).
@@ -335,6 +341,9 @@ However, a straightforward implementation of `wait_until()` would
 require `atomic::wait_until()` to be defined. A prototype
 implementation `atomic_condition_variable` without `wait_until()` is
 available in [@atomic_sync].
+
+It might be useful to introduce a `transactional_lock_guard` to
+simplify the implementation of lock elision.
 
 ---
 references:
