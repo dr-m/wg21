@@ -53,6 +53,13 @@ prevent other threads from attempting to acquire the lock that we are
 trying to acquire. We propose member functions like `spin_lock()` that
 are like `lock()`, but may include a spin-loop before entering a wait.
 
+There may exist implementation-defined attributes for enabling
+spin-loops, but there does not appear to be a way to specify such
+attributes when constructing a `std::mutex` or
+`std::shared_mutex`. Moreover, a spin-loop like [@glibc.spin] would
+affect all `lock()` or `shared_lock()` operations on a particular
+lock, or all locks in the program, which is not practical.
+
 There does not appear to be a way to flexibly use lock elision with
 `mutex` or `shared_mutex`. There is a global parameter
 [@glibc.elision] that could apply to every `std::mutex::lock()` call.
@@ -130,7 +137,7 @@ This proposal is a pure library extension.
 
 # Proposed Wording
 
-Add after __§32.5.3 [shared.mutex.syn]__ the subsection
+Add after __§33.6.3 [shared.mutex.syn]__ the subsection
 [mutex.trans.syn] "Header `<trans_mutex>` synopsis":
 
 ```cpp
@@ -151,7 +158,7 @@ namespace std {
 ```
 
 Change the end of the first sentence of
-__§32.5.4.1.1 [thread.mutex.requirements.mutex.general]__
+__§33.6.4.2.1 [thread.mutex.requirements.mutex.general]__
 
 >and `shared_timed_mutex`.
 
@@ -159,7 +166,7 @@ to
 
 >`shared_timed_mutex`, `trans_mutex`, and `shared_trans_mutex`.
 
-Add after __§32.5.4.2.3 [thread.mutex.recursive]__ the section
+Add after __§33.6.4.2.3 [thread.mutex.recursive]__ the section
 [thread.mutex.trans] "Class `trans_mutex`":
 ```cpp
 namespace std {
@@ -320,13 +327,17 @@ The implementation also supports C++11 by emulating the C++20
 on Linux or OpenBSD.
 
 The prototype implementation [@atomic_sync] is based on a C++11
-implementation that is part of [@mariadb_server] 10.6 (using
-futex-like operations on Linux, OpenBSD, and Microsoft Windows).
+implementation that is part of [@mariadb_server] starting with version 10.6,
+using futex-like operations on Linux, OpenBSD, FreeBSD, DragonFly BSD
+and Microsoft Windows.
 That code base also includes a thin wrapper of Microsoft `SRWLOCK`
 for those cases where `update_lock()` is not needed.
+On operating systems for which a futex-like interface has not been
+implemented, the wait queues that futexes would provide are simulated
+with mutexes and condition variables, which incurs some storage overhead.
 
 The `transactional_lock_guard` has been tested on GNU/Linux on POWER 8
-(with runtime detection of the POWER v2.09 Hardware Trace Monitor) and
+(with runtime detection of the POWER v2.09 Hardware Transactional Memory) and
 on IA-32 and AMD64 (with runtime detection of Intel TSX-NI a.k.a. RTM).
 
 The `transactional_lock_guard` implementation has also been tested on
@@ -355,6 +366,10 @@ references:
     citation-label: MariaDB Server
     title: "MariaDB: The open source relational database"
     URL: https://github.com/MariaDB/server/
+  - id: glibc.spin
+    citation-label: glibc.spin
+    title: "GNU libc POSIX Thread Tunables"
+    URL: https://www.gnu.org/software/libc/manual/html_node/POSIX-Thread-Tunables.html
   - id: glibc.elision
     citation-label: glibc.elision
     title: "GNU libc Elision Tunables"
