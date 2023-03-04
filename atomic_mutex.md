@@ -70,8 +70,7 @@ performance.
 To allow maximum transparency, the proposed `atomic_mutex` and
 `atomic_shared_mutex` allow an underlying storage class to be defined
 or extended by the user. This allows an application developer to
-control the exact storage size and format, as well as to define
-nonstandard predicates like `is_locked()` or `is_locked_or_waiting()`.
+control the exact storage size and format.
 The default storage is derived from `std::atomic` on an integer type.
 
 ## atomic_shared_mutex
@@ -104,15 +103,18 @@ acquisition. A possible implementation could be as follows:
 ```cpp
 class spin_mutex : public std::atomic_mutex
 {
+  static unsigned spin_rounds;
 public:
-  void lock() { spin_lock(); }
+  void lock() { spin_lock(spin_rounds); }
 };
 
 class spin_shared_mutex : public std::atomic_shared_mutex
 {
+  static unsigned spin_rounds;
 public:
-  void lock() { spin_lock(); }
-  void shared_lock() { spin_lock_shared(); }
+  void lock() { spin_lock(spin_rounds); }
+  void shared_lock() { spin_lock_shared(spin_rounds); }
+  void update_lock() { spin_lock_update(spin_rounds); }
 };
 ```
 
@@ -127,16 +129,15 @@ mutexes, no predicates like `is_locked()` or `is_locked_or_waiting()`
 are defined, possibly because using them outside assertions may be
 considered bad style.
 
+Our proposal makes such predicates available as public member
+functions of `atomic_mutex_storage` or `atomic_shared_mutex_storage`,
+which can be accessed via `atomic_mutex::native_handle()` or
+`atomic_shared_mutex::native_handle()`.
+
 The prototype in [@atomic_sync] includes a `transactional_lock_guard`
-that resembles `std::lock_guard` but supports lock elision by using
-a memory transaction when support is enabled during compilation time
-and detected during runtime.  The predicates `is_locked()` and
-`is_locked_or_waiting()` that are necessary for lock elision are
-defined in `transactional_mutex_storage` and
-`transactional_shared_mutex_storage` classes that are derived from
-`atomic_mutex_storage<>` and `shared_mutex_storage<>`. The hardware
-lock elision works with `atomic_mutex<transactional_mutex_storage>`
-and `atomic_shared_mutex<transactional_shared_mutex_storage>`.
+that resembles `std::lock_guard` but supports a compile-time option
+for detecting lock elision by using a hardware memory transaction when
+the capability is detected during runtime.
 
 # Impact on the Standard
 
@@ -151,7 +152,7 @@ Add after __§33.6.3 [shared.mutex.syn]__ the subsection
 namespace std {
   // [thread.mutex.atomic.storage], class atomic_mutex_storage
   template<typename T = uint32_t>
-  class atomic_mutex_storage : public std::atomic<T>;
+  class atomic_mutex_storage : std::atomic<T>;
 
   // [thread.mutex.atomic], class atomic_mutex
   template<typename storage = atomic_mutex_storage<>>
@@ -165,7 +166,7 @@ with the following contents:
 ```cpp
 namespace std {
   template<typename T = uint32_t>
-  class atomic_shared_mutex_storage : public atomic_mutex_storage<T>;
+  class atomic_shared_mutex_storage : std::atomic<T>;
 
   // [thread.sharedmutex.atomic], class atomic_shared_mutex
   template<typename storage = atomic_shared_mutex_storage<>>
@@ -175,43 +176,49 @@ namespace std {
 
 Change the end of the first sentence of
 __§33.6.4.2.1 [thread.mutex.requirements.mutex.general]__
->… `shared_mutex`, and `shared_timed_mutex`.
-to
->… `shared_mutex`, `shared_timed_mutex`, `atomic_mutex`, `atomic_shared_mutex`.
 
-Add after __§33.6.4.3.3 [thread.mutex.recursive] the section
-[thread.mutex.atomic]` "Class `atomic_mutex`":
+>… `shared_mutex`, and `shared_timed_mutex`.
+
+to
+
+>… `shared_mutex`, `shared_timed_mutex`, `atomic_mutex`,
+>and `atomic_shared_mutex`.
+
+Add after __§33.6.4.3.3 [thread.mutex.recursive]__        the section
+[thread.mutex.atomic] "Class `atomic_mutex`":
 ```cpp
 namespace std {
   template<typename T = uint32_t>
-  class atomic_mutex_storage : public std::atomic<T> {
-  public:
-    using type = T;
-    static constexpr type HOLDER = type(~(type(~type(0)) >> 1));
-    static constexpr type WAITER = 1;
-
-    static unsigned spin_rounds;
-
-    void wait_and_lock();
-    void spin_wait_and_lock();
-
-    // for atomic_shared_mutex
-    void lock_wait(T lk);
+  class atomic_mutex_storage : std::atomic<T> {
+  public: // available to users via atomic_mutex::native_handle()
+    constexpr bool is_locked() const noexcept;
+    constexpr bool is_locked_or_waiting() const noexcept;
+    constexpr bool is_locked_not_waiting() const noexcept;
+  protected: // for internal use of atomic_mutex
+    /// @return whether the lock was acquired
+    bool lock_impl() noexcept;
+    void lock_wait();
+    void spin_lock_wait(unsigned spin_rounds);
+    /// @return whether unlock_notify() needs to be called */
+    bool unlock_impl() noexcept;
+    void unlock_notify() noexcept;
   };
 
   template<typename storage = atomic_mutex_storage<>>
-  class atomic_mutex : public storage {
+  class atomic_mutex : private storage {
   public:
     constexpr atomic_mutex();
     constexpr ~atomic_mutex();
     atomic_mutex(const atomic_mutex&) = delete;
     atomic_mutex& operator=(const atomic_mutex&) = delete;
 
+    constexpr const storage& native_handle() const { return *this; }
+
     bool try_lock() noexcept;
     void lock();
     void unlock() noexcept;
 
-    void spin_lock();
+    void spin_lock(unsigned spin_rounds);
   }
 };
 ```
@@ -235,7 +242,7 @@ namespace std {
 >thread.
 
 >The number of loops in `spin_lock()` may be controlled by
->defining `storage::spin_rounds`. **FIXME: How to word this?**
+>the parameter `spin_rounds`.
 
 >[Note 2: A program will deadlock if the thread that owns a mutex
 >object calls `lock()` or `spin_lock()` on that object.  If the
@@ -247,31 +254,67 @@ namespace std {
 >`atomic_mutex` object owned by any thread.
 
 Add after __[thread.mutex.atomic]__ the section
-[thread.sharedmutex.atomic]` "Class `atomic_shared_mutex`":
+[thread.sharedmutex.atomic] "Class `atomic_shared_mutex`":
 ```cpp
 namespace std {
 
   template<typename T = uint32_t>
-  class atomic_shared_mutex_storage : public atomic_mutex_storage<T> {
-    atomic_mutex<mutex_storage<T>> ex;
+  class atomic_shared_mutex_storage : std::atomic<T> {
+  private: // a possible implementation
+    atomic_mutex<atomic_mutex_storage<T>> outer; // for non-shared access
+  public: // available to users via atomic_shared_mutex::native_handle()
+    constexpr bool is_locked() const noexcept;
+    constexpr bool is_locked_or_waiting() const noexcept;
+    constexpr bool is_locked_not_waiting() const noexcept;
+  protected: // for internal use of atomic_shared_mutex
+    void lock_outer();
+    void spin_lock_outer(unsigned spin_rounds);
+    void unlock_outer() noexcept;
+
+    /// @return lock word to be passed to lock_inner_wait()
+    /// @retval 0 if the exclusive lock was granted
+    type lock_inner() noexcept;
+    void lock_inner_wait(type);
+    void unlock_inner() noexcept;
+
+    /// @return whether the shared lock was acquired
+    bool shared_lock_inner() noexcept;
+    /// @return whether an exclusive waiter needs shared_unlock_inner_notify()
+    void shared_unlock_inner_notify() noexcept;
+
+    void update_lock_inner() noexcept;
+    /// @return lock word to be passed to lock_inner_wait()
+    /// @retval 0 if the lock was upgraded to exclusive
+    type update_lock_upgrade_inner() noexcept;
+    void update_lock_downgrade_inner() noexcept;
+    void update_unlock_inner() noexcept;
   };
 
   template<typename storage = atomic_shared_mutex_storage<>>
-  class atomic_shared_mutex : public storage {
+  class atomic_shared_mutex : private storage {
   public:
     constexpr atomic_shared_mutex();
     atomic_shared_mutex(const atomic_shared_mutex&) = delete;
     atomic_shared_mutex& operator=(const atomic_shared_mutex&) = delete;
 
+    constexpr const storage& native_handle() const { return *this; }
+
     bool try_lock() noexcept;
     void lock();
-    void spin_lock();
+    void spin_lock(unsigned spin_rounds);
     void unlock() noexcept;
 
     bool try_lock_shared() noexcept;
     void lock_shared();
-    void spin_lock_shared();
+    void spin_lock_shared(unsigned spin_rounds);
     void unlock_shared() noexcept;
+
+    bool try_lock_update() noexcept;
+    void lock_update();
+    void spin_lock_update(unsigned spin_rounds);
+    void update_lock_upgrade() noexcept;
+    void update_lock_downgrade() noexcept;
+    void unlock_update() noexcept;
   };
 }
 ```
@@ -290,9 +333,17 @@ namespace std {
 >3. a thread terminates while possessing any ownership of an
 `atomic_shared_mutex`.
 
->The operations `spin_lock()` and `spin_lock_shared()` are similar to
->`lock()` and `lock_shared()`, but they may involve busy-waiting
->(spin-loop) if the object is owned by any thread.
+>The operations `spin_lock()`, `spin_lock_shared()` and `spin_lock_update()`
+>are similar to `lock()`, `lock_shared()` and `lock_updte()`, but they may
+>involve busy-waiting (spin-loop) if the object is owned by any thread.
+>The length of the spin-loop is controlled by the function parameter.
+
+>In addition to `shared_lock()`, there are two non-shared lock operations:
+>the exclusive `lock()` and an `update_lock()` that conflicts with itself
+>and `lock()` but allows a number of `shared_lock()` to be held concurrently.
+>The function `update_lock_upgrade()` upgrades a granted `update_lock()`
+>to `lock()`, and `update_lock_downgrade()` converts an exclusive `lock()`
+>to `update_lock()`.
 
 # Design Decisions
 
@@ -300,8 +351,7 @@ The `atomic_mutex` is intended to be a plug-in replacement of `mutex`.
 
 For special use cases, such as block descriptors in a database buffer
 pool, small storage size and minimal implementation overhead are more
-important than compatibility with operating system primitives via
-`native_handle()`.
+important than compatibility.
 
 `atomic_shared_mutex::lock_shared()` and
 `atomic_shared_mutex::try_lock_shared()` are like `shared_mutex`:
@@ -331,11 +381,27 @@ We may want to leave room for implementations where the internal
 representation of an unlocked `atomic_mutex` or `atomic_shared_mutex`
 object is not zero-initialized.
 
+## User-defined storage for `atomic_mutex` or `atomic_shared_mutex`
+
+The proposed `atomic_mutex_storage` can be derived from an `atomic`
+integer, relying on a single wait queue that is provided by
+`std::atomic::wait()` and `std::atomic::notify_one()`.
+
+The proposed `atomic_shared_mutex_storage` could be implemented based
+on two `atomic` integers: an `atomic_mutex outer` lock for non-shared
+access, and another for keeping track of shared access.
+
+While such setup with two `std::atomic::wait()` queues could satisfy
+many needs, it is possible to (re)define the mutex storage based on
+something else. It might be that `std::atomic::wait()` is not
+available in a particular environment, or an environment provides
+another form of storage efficient mutexes and rw-locks.
+
 # Implementation Experience
 
 An implementation of `atomic_mutex` and `atomic_shared_mutex` exists.
-It has been tested on GNU/Linux on IA-32, AMD64, ARMv7, ARMv8, POWER
-8, s390x with various versions of GCC between 4.8.5 and 12.2.0, Clang
+It has been tested on GNU/Linux on IA-32, AMD64, ARMv7, ARMv8, POWER 8,
+s390x with various versions of GCC between 4.8.5 and 12.2.0, Clang
 (including versions 9, 12, 13, 15), as well as with the latest
 Microsoft Visual Studio on Microsoft Windows on AMD64.
 
@@ -346,9 +412,11 @@ on Linux or OpenBSD.
 The prototype implementation [@atomic_sync] is based on a C++11
 implementation that is part of [@mariadb_server] starting with version 10.6,
 using futex-like operations on Linux, OpenBSD, FreeBSD, DragonFly BSD
-and Microsoft Windows.
-That code base also includes a thin wrapper of Microsoft `SRWLOCK`
-(`sizeof(SRWLOCK)==sizeof(size_t)`, that is, 4 or 8 bytes)
+and Microsoft Windows. It includes an interface to a data race detector
+[@tsan], which passes some tests on Clang 14, 15, and GCC 12.
+
+The [@mariadb_server] code base also includes a thin wrapper of Microsoft
+`SRWLOCK` (`sizeof(SRWLOCK)==sizeof(size_t)`, that is, 4 or 8 bytes)
 for those cases where `update_lock()` is not needed.
 On operating systems for which a futex-like interface has not been
 implemented, the wait queues that futexes would provide are simulated
@@ -364,12 +432,9 @@ TSX-NI or RTM.
 
 # Future Work
 
-A variant of `atomic_shared_mutex` that includes `update_lock()` could
-be defined, either as part of this proposal or as a future proposal.
-
 Because `condition_variable` and `condition_variable_any` do not work
 with non-exclusive modes of `shared_mutex` or `atomic_shared_mutex`,
-we might want to introduce a `atomic_condition_variable`.
+we might want to introduce an `atomic_condition_variable`.
 However, a straightforward implementation of `wait_until()` would
 require `atomic::wait_until()` to be defined. A prototype
 implementation `atomic_condition_variable` without `wait_until()` is
@@ -396,4 +461,8 @@ references:
     citation-label: glibc.elision
     title: "GNU libc Elision Tunables"
     URL: https://www.gnu.org/software/libc/manual/html_node/Elision-Tunables.html
+  - id: tsan
+    citation-label: ThreadSanitizer
+    title: "Thread Sanitizer manual"
+    URL: https://github.com/google/sanitizers/wiki/ThreadSanitizerCppManual
 ---
