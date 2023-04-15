@@ -32,7 +32,7 @@ following shortcomings of `mutex` and `shared_mutex`:
 For historical reasons, `mutex` and `shared_mutex` may be larger than
 necessary. For example, the size of `pthread_mutex_t` is 48 bytes on
 64-bit GNU/Linux. In a prototype implementation, we have a 4-byte
-`atomic_mutex` and an 8-byte `atomic_trans_mutex`.
+`atomic_mutex` and an 8-byte `atomic_shared_mutex`.
 
 A small mutex could be embedded deep in concurrent data structures. An
 extreme could be to have one mutex per CPU cache line, covering a
