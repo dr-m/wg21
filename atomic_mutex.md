@@ -71,7 +71,7 @@ To allow maximum transparency, the proposed `atomic_mutex` and
 `atomic_shared_mutex` allow an underlying storage class to be defined
 or extended by the user. This allows an application developer to
 control the exact storage size and format.
-The default storage is derived from `std::atomic` on an integer type.
+The default storage could encapsulate `std::atomic` on an integer type.
 
 ## atomic_shared_mutex
 
@@ -131,8 +131,8 @@ considered bad style.
 
 Our proposal makes such predicates available as public member
 functions of `atomic_mutex_storage` or `atomic_shared_mutex_storage`,
-which can be accessed via `atomic_mutex::native_handle()` or
-`atomic_shared_mutex::native_handle()`.
+which can be accessed via `atomic_mutex::get_storage()` or
+`atomic_shared_mutex::get_storage()`.
 
 The prototype in [@atomic_sync] includes a `transactional_lock_guard`
 that resembles `std::lock_guard` but supports a compile-time option
@@ -152,11 +152,11 @@ Add after __§33.6.3 [shared.mutex.syn]__ the subsection
 namespace std {
   // [thread.mutex.atomic.storage], class atomic_mutex_storage
   template<typename T = uint32_t>
-  class atomic_mutex_storage : std::atomic<T>;
+  class atomic_mutex_storage;
 
   // [thread.mutex.atomic], class atomic_mutex
-  template<typename storage = atomic_mutex_storage<>>
-  class atomic_mutex : public storage;
+  template<typename Storage = atomic_mutex_storage>
+  class atomic_mutex;
 };
 ```
 
@@ -166,11 +166,11 @@ with the following contents:
 ```cpp
 namespace std {
   template<typename T = uint32_t>
-  class atomic_shared_mutex_storage : std::atomic<T>;
+  class atomic_shared_mutex_storage;
 
   // [thread.sharedmutex.atomic], class atomic_shared_mutex
-  template<typename storage = atomic_shared_mutex_storage<>>
-  class atomic_shared_mutex : public storage;
+  template<typename Storage = atomic_shared_mutex_storage>
+  class atomic_shared_mutex;
 };
 ```
 
@@ -188,13 +188,22 @@ Add after __§33.6.4.3.3 [thread.mutex.recursive]__        the section
 [thread.mutex.atomic] "Class `atomic_mutex`":
 ```cpp
 namespace std {
+  template<typename Storage> class atomic_mutex;
+
   template<typename T = uint32_t>
-  class atomic_mutex_storage : std::atomic<T> {
-  public: // available to users via atomic_mutex::native_handle()
+  class atomic_mutex_storage {
+    // exposition only
+    std::atomic<T> m;
+  public:
     constexpr bool is_locked() const noexcept;
     constexpr bool is_locked_or_waiting() const noexcept;
     constexpr bool is_locked_not_waiting() const noexcept;
-  protected: // for internal use of atomic_mutex
+  private:
+    friend class atomic_mutex<atomic_mutex_storage>;
+
+    /// @return default argument for spin_lock_wait() */
+    unsigned default_spin_rounds();
+
     /// @return whether the lock was acquired
     bool lock_impl() noexcept;
     void lock_wait();
@@ -204,15 +213,16 @@ namespace std {
     void unlock_notify() noexcept;
   };
 
-  template<typename storage = atomic_mutex_storage<>>
-  class atomic_mutex : private storage {
+  template<typename Storage = atomic_mutex_storage>
+  class atomic_mutex {
+    Storage storage;
   public:
     constexpr atomic_mutex();
     constexpr ~atomic_mutex();
     atomic_mutex(const atomic_mutex&) = delete;
     atomic_mutex& operator=(const atomic_mutex&) = delete;
 
-    constexpr const storage& native_handle() const { return *this; }
+    constexpr const Storage& get_storage() const { return storage; }
 
     bool try_lock() noexcept;
     void lock();
@@ -257,16 +267,25 @@ Add after __[thread.mutex.atomic]__ the section
 [thread.sharedmutex.atomic] "Class `atomic_shared_mutex`":
 ```cpp
 namespace std {
+  template<typename Storage> class atomic_shared_mutex;
 
   template<typename T = uint32_t>
-  class atomic_shared_mutex_storage : std::atomic<T> {
-  private: // a possible implementation
-    atomic_mutex<atomic_mutex_storage<T>> outer; // for non-shared access
-  public: // available to users via atomic_shared_mutex::native_handle()
+  class atomic_shared_mutex_storage {
+    // exposition only
+    std::atomic<T> inner;
+    atomic_mutex<mutex_storage<T>> outer;
+    /// unspecified (see below)
+    using type = T;
+  public:
     constexpr bool is_locked() const noexcept;
     constexpr bool is_locked_or_waiting() const noexcept;
     constexpr bool is_locked_not_waiting() const noexcept;
-  protected: // for internal use of atomic_shared_mutex
+  private:
+    friend class atomic_shared_mutex<atomic_shared_mutex_storage>;
+
+    /// @return default argument for spin_lock_outer() */
+    unsigned default_spin_rounds();
+
     void lock_outer();
     void spin_lock_outer(unsigned spin_rounds);
     void unlock_outer() noexcept;
@@ -280,6 +299,7 @@ namespace std {
     /// @return whether the shared lock was acquired
     bool shared_lock_inner() noexcept;
     /// @return whether an exclusive waiter needs shared_unlock_inner_notify()
+    bool shared_unlock_inner() noexcept;
     void shared_unlock_inner_notify() noexcept;
 
     void update_lock_inner() noexcept;
@@ -290,14 +310,15 @@ namespace std {
     void update_unlock_inner() noexcept;
   };
 
-  template<typename storage = atomic_shared_mutex_storage<>>
-  class atomic_shared_mutex : private storage {
+  template<typename Storage = atomic_shared_mutex_storage>
+  class atomic_shared_mutex {
+    Storage storage;
   public:
     constexpr atomic_shared_mutex();
     atomic_shared_mutex(const atomic_shared_mutex&) = delete;
     atomic_shared_mutex& operator=(const atomic_shared_mutex&) = delete;
 
-    constexpr const storage& native_handle() const { return *this; }
+    constexpr const Storage& get_storage() const { return storage; }
 
     bool try_lock() noexcept;
     void lock();
@@ -345,6 +366,17 @@ namespace std {
 >to `lock()`, and `update_lock_downgrade()` converts an exclusive `lock()`
 >to `update_lock()`.
 
+>The data type `atomic_shared_mutex_storage::type` is intentionally left
+>unspecified. Objects or values of this type are returned by
+>`atomic_shared_mutex_storage::lock_inner()` and
+>`atomic_shared_mutex_storage::update_lock_upgrade_inner()`
+>when the current thread tries to acquire an exclusive lock.
+>If the returned value evaluates to zero or false, the exclusive lock
+>was granted. A nonzero value must be passed to the function
+>`atomic_shared_mutex_storage::lock_inner_wait()`, which will wait
+>until `atomic_shared_mutex_storage::shared_unlock_inner_notify()`
+>has been invoked in the last thread that held a shared lock.
+
 # Design Decisions
 
 The `atomic_mutex` is intended to be a plug-in replacement of `mutex`.
@@ -368,6 +400,23 @@ it in Thread _B_ (after the page has been written to the file system),
 a subsequent request to acquire the page lock in Thread _A_ will wait
 until Thread _B_ has released the lock.
 
+## Acquisition and Release Split into Fast and Slow Path
+
+When an uncontended mutex is acquired and released, ideally there
+should be no operating system calls or no interaction with other
+thread execution cores. The simple case of acquiring and releasing can
+be defined in `inline` functions such as
+`atomic_mutex_storage::lock_impl()` and
+`atomic_mutex_storage::unlock_impl()`. A possible implementation could
+use the Intel 80486 `LOCK XADD` instruction. More complex handling in
+`atomic_mutex_storage::lock_wait()` and
+`atomic_mutex_storage::unlock_notify()` may better be implemented in
+non-`inline` functions.
+
+Splitting the operations in this way also allows [@tsan] instrumentation
+to be defined in `atomic_mutex` and `atomic_shared_mutex`; any mutex
+storage implementation should work without any additional instrumentation.
+
 ## Constructors and zero-initialization
 
 A prototype implementation that is based on `atomic<uint32_t>` allows
@@ -383,13 +432,13 @@ object is not zero-initialized.
 
 ## User-defined storage for `atomic_mutex` or `atomic_shared_mutex`
 
-The proposed `atomic_mutex_storage` can be derived from an `atomic`
+The proposed `atomic_mutex_storage` can encapsulate an `atomic`
 integer, relying on a single wait queue that is provided by
 `std::atomic::wait()` and `std::atomic::notify_one()`.
 
 The proposed `atomic_shared_mutex_storage` could be implemented based
 on two `atomic` integers: an `atomic_mutex outer` lock for non-shared
-access, and another for keeping track of shared access.
+access, and an `inner` lock word for keeping track of shared access.
 
 While such setup with two `std::atomic::wait()` queues could satisfy
 many needs, it is possible to (re)define the mutex storage based on
